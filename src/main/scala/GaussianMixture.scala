@@ -1,37 +1,27 @@
 import spire.math
 import breeze.linalg.{DenseMatrix, DenseVector, diag, eigSym, inv, qr}
-import breeze.stats.distributions.{MultivariateGaussian, Bernoulli}
+import breeze.stats.distributions.{Bernoulli, MultivariateGaussian, Uniform}
 import spire.math.Interval
 import spire.implicits.{DoubleAlgebra, IntAlgebra}
-import scalaz.Scalaz._
 
+import scala.util.Random
+
+
+/**
+  * Style change will be slow to implement due to unforseen circumstances.
+  */
 object GaussianMixture {
-  /*  D -> Dimensions
-      K -> # Clusters
-      N -> # Samples
-      C -> Separability between clusters
-      O -> # Outliers
-      S -> Degree of symmetry
-   */
 
-  def GenGMM(N: Int, w: Vector[Double], m: Vector[DenseVector[Double]], s: Vector[DenseMatrix[Double]]): Vector[DenseVector[Double]] = {
-    val clust_n: Vector[Int] = w.map(e => Math.round(e * N).toInt)
-    clust_n.zip(m).zip(s).map(p => Array.fill(p._1._1)(MultivariateGaussian(p._1._2, p._2).draw()))
-      .foldLeft(Array[DenseVector[Double]]())(_ ++ _).toVector
-  }
+  def genMixture(
+              N: Int,
+              w: Vector[Double],
+              m: Vector[DenseVector[Double]],
+              s: Vector[DenseMatrix[Double]],
+              O: Boolean): Vector[DenseVector[Double]] = {
+    val K: Int = w.size
 
-  def GenGMM(K: Int, D: Int, R: Double, N: Int, C: Double, O: Boolean, S: Boolean): Vector[DenseVector[Double]] = {
-    // Generate weights for GMM
-    val w: Vector[Double] = genWeights(K, R)
-
-    // Generate samples for each gaussian
+    // Divide
     val clust_samples: Vector[Int] = w.map(e => Math.round(e * N).toInt)
-
-    // Generate K (D x D) Covariance matrices with given symmetry
-    val s: Vector[DenseMatrix[Double]] = genCovarianceMatrices(S, K, D)
-
-    // Separation
-    val m: Vector[DenseVector[Double]] = genMeanVectors(D, K, C, s)
 
     // Generate list of gaussian data
     val pre_data: Vector[Vector[DenseVector[Double]]] = (0 until K).map(k => Vector.fill(clust_samples(k))(MultivariateGaussian(m(k), s(k)).draw())).toVector
@@ -45,37 +35,46 @@ object GaussianMixture {
   }
 
   // Generate a list of mixture coefficients
-  def genWeights(k: Int, r: Double): Vector[Double] = {
-    // Allocate a random weight to each cluster
-    val n: Vector[Double] = Vector(1, r) ++ Vector.fill(k - 2)(breeze.stats.distributions.Uniform(1, r).draw())
+  def genWeights(K: Int, r: Double): Vector[Double] = {
+    if (K < 2) throw new Exception("Invalid number of components.")
+    if (r < 1) throw new Exception("Mixture coefficient eccentricity cannot be less than one.")
+    val n: Vector[Double] = Vector(1, r) ++ Vector.fill(K - 2)(Uniform(1, r).draw())
     val w: Vector[Double] = n.map(x => x/n.sum)
     w
   }
 
   // Generate covariance matrices
-  def genCovarianceMatrices(S: Boolean, K: Int, D: Int): Vector[DenseMatrix[Double]] = {
-    if (S) {
-      Vector.fill(K)(DenseMatrix.eye[Double](D) * Dist.uniform(Interval(0.5, 20.0)).eval(RNG.fromTime))
-    } else {
-      Vector.fill(K)({
-        val mat: DenseMatrix[Double] = DenseMatrix.rand(D, D)
+  def genCovarianceMatrices(dim: Int, ecc: Vector[Double], maxDev: Vector[Double]): Vector[DenseMatrix[Double]] = {
+    if (ecc.size != maxDev.size) throw new Exception("Unequal eccentricity and maximum deviation vectors.")
+    val K: Int = ecc.size
+    if (K < 2) throw new Exception("invalid number of components")
+    if (ecc.contains(1.0)) throw new Exception("Covariance matrix eccentricity cannot be less than one.")
+    ecc.zip(maxDev).map(cov => {
+      if (cov._1 == 1.0) {
+        DenseMatrix.eye[Double](dim) * Uniform(0.0, maxDev).draw()
+      } else {
+        val mat: DenseMatrix[Double] = DenseMatrix.rand(dim, dim)
         val Q: DenseMatrix[Double] = qr(mat).q
-        val L: DenseMatrix[Double] = diag(new DenseVector(Array.fill(D)(cilib.Dist.uniform(Interval(0.5, 20.0)).eval(RNG.fromTime))))
+        val eigval: Array[Double] = Random.shuffle(Vector(cov._2 / cov._1, cov._2)
+          ++ Vector.fill(K-2)(Uniform(cov._2 / cov._1, cov._2).draw())).toArray
+        val L: DenseMatrix[Double] = diag(new DenseVector(eigval))
         Q.t * L * Q
-      })
-    }
+      }
+    })
   }
 
   // Generate a list of Mean vector
-  def genMeanVectors(D: Int, K: Int, C: Double, s: Vector[DenseMatrix[Double]]): Vector[DenseVector[Double]] = {
-    var m: Array[DenseVector[Double]] = Array(DenseVector.zeros(D))
+  def genMeanVectors(C: Double, s: Vector[DenseMatrix[Double]]): Vector[DenseVector[Double]] = {
+    val dim: Int = s.head.rows
+    val K: Int = s.size
+    var m: Array[DenseVector[Double]] = Array(DenseVector.zeros(dim))
 
     // Generate initial mean vectors
     for (k <- 1 until K) {
-      var vec: DenseVector[Double] = new DenseVector[Double](Array.fill(D)(Dist.uniform(Interval(-1.0, 1.0)).eval(RNG.fromTime)))
+      var vec: DenseVector[Double] = new DenseVector[Double](Array.fill(dim)(Uniform(-1.0, 1.0).draw()))
       vec = vec / math.sqrt(vec.t * vec)
-      val c: DenseVector[Double] = m(Dist.uniformInt(Interval(0, k - 1)).eval(RNG.fromTime))
-      m = m ++ Vector(c + (vec * Dist.uniform(Interval(0.0, 10.0)).eval(RNG.fromTime)))
+      val c: DenseVector[Double] = m(Uniform(0, k-1).draw())
+      m = m ++ Vector(c + (vec * Uniform(0, 10).draw()))
     }
 
     // Calculate the separation of 2 mean vectors
